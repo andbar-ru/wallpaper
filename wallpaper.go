@@ -137,8 +137,17 @@ func getDocument(url string) *goquery.Document {
 	return document
 }
 
+// color2hex return color in hex format '#rrggbb'
+func color2hex(c *color.NRGBA) string {
+	hex := fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
+	if c.A != 0xff {
+		hex += fmt.Sprintf("%02x", c.A)
+	}
+	return hex
+}
+
 // getColorDistance returns Euclidean distance between two NRGBA colors.
-func getColorDistance(c1, c2 color.NRGBA) float64 {
+func getColorDistance(c1, c2 *color.NRGBA) float64 {
 	r1 := float64(c1.R)
 	r2 := float64(c2.R)
 	g1 := float64(c1.G)
@@ -151,33 +160,52 @@ func getColorDistance(c1, c2 color.NRGBA) float64 {
 	return math.Sqrt((r1-r2)*(r1-r2) + (g1-g2)*(g1-g2) + (b1-b2)*(b1-b2) + (a1-a2)*(a1-a2))
 }
 
-// pickThumb picks thumb which closest to color. If not color, picks first thumb.
-// Returns href to the next page.
-func pickThumb(thumbs *goquery.Selection) *goquery.Selection {
-	var thumb *goquery.Selection
+// pickThumb picks thumb which closest to color and returns it with distance from the checkColor.
+// If not color, returns first thumb and -1.
+func pickThumb(thumbs *goquery.Selection) (*goquery.Selection, *color.NRGBA, float64) {
 	if checkColor == nil {
-		thumb = thumbs.First()
+		return thumbs.First(), nil, -1
 	} else {
-		minDistance := 500.0
+		type result struct {
+			thumb    *goquery.Selection
+			avgColor color.NRGBA
+			distance float64
+		}
 
-		thumbs.Each(func(i int, th *goquery.Selection) {
-			src, ok := th.Find("img").Attr("data-src")
-			if !ok {
-				log.Panic("Could not find thumb src")
-			}
-			response := getResponse(src)
-			defer response.Body.Close()
-			img, _, err := image.Decode(response.Body)
-			check(err)
-			avgColor := average_color.AverageColor(img)
-			distance := getColorDistance(avgColor, *checkColor)
-			if distance < minDistance {
-				minDistance = distance
-				thumb = th
-			}
+		var (
+			closestThumb             *goquery.Selection
+			closestThumbAverageColor *color.NRGBA
+			minDistance              = 500.0
+			results                  = make(chan result, thumbs.Length())
+		)
+
+		thumbs.Each(func(i int, thumb *goquery.Selection) {
+			go func() {
+				src, ok := thumb.Find("img").Attr("data-src")
+				if !ok {
+					log.Panic("Could not find thumb src")
+				}
+				response := getResponse(src)
+				defer response.Body.Close()
+				img, _, err := image.Decode(response.Body)
+				check(err)
+				avgColor := average_color.AverageColor(img)
+				distance := getColorDistance(&avgColor, checkColor)
+				results <- result{thumb, avgColor, distance}
+			}()
 		})
+
+		for i := 0; i < thumbs.Length(); i++ {
+			res := <-results
+			if res.distance < minDistance {
+				minDistance = res.distance
+				closestThumb = res.thumb
+				closestThumbAverageColor = &res.avgColor
+			}
+		}
+
+		return closestThumb, closestThumbAverageColor, minDistance
 	}
-	return thumb
 }
 
 // downloadImage downloads image to imagesDir and returns path to it.
@@ -199,7 +227,7 @@ func downloadImage(src string) string {
 
 // Set wallpaper.
 func setWallpaper(imagePath string) {
-	cmd := exec.Command("fbsetbg", "-f", imagePath)
+	cmd := exec.Command("fbsetbg", "-t", imagePath)
 	err := cmd.Run()
 	check(err)
 }
@@ -219,10 +247,20 @@ func main() {
 		log.Panicf("Could not find thumbs")
 	}
 
-	thumb := pickThumb(thumbs)
+	if checkColor != nil {
+		fmt.Printf("Picking a thumb out of %d which has average color closest to %s...\n", thumbs.Length(), color2hex(checkColor))
+	} else {
+		fmt.Printf("Picking first thumb out of %d.\n", thumbs.Length())
+	}
+
+	thumb, avgColor, distance := pickThumb(thumbs)
 	href, ok := thumb.Find(".preview").Attr("href")
 	if !ok {
 		log.Panic("Could not find thumb's preview href")
+	}
+
+	if avgColor != nil {
+		fmt.Printf("Result: average color %s, distance %.2f\n", color2hex(avgColor), distance)
 	}
 
 	// Preview page.
