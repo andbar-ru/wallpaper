@@ -19,6 +19,10 @@ import (
 	"strconv"
 	"strings"
 
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andbar-ru/average_color"
 )
@@ -29,20 +33,26 @@ const (
 	PURITY     = "100" // +SWF(safe for work),-Sketchy,?
 	SORTING    = "random"
 
-	USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.122 Safari/537.36"
+	MAX_DISTANCE = 500.0
+	USER_AGENT   = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.122 Safari/537.36"
 
-	hDesc = "print this help"
-	rDesc = "download and set random wallpaper without comparing with check color"
+	H_DESC = "print this help"
+	R_DESC = "true random - download and set random wallpaper without comparing with check color"
+	T_DESC = "threshold - maximum allowed distance between thumb average color and check color. Must be between 0 and 500."
 )
 
 var (
 	// Set from сommand line arguments.
 	checkColor *color.NRGBA
+	threshold  float64
 
 	imagesDir  string
 	resolution string
 	client     = &http.Client{}
 	colorRgx   = regexp.MustCompile(`^#?[0-9a-fA-F]{6}$`)
+	// Start page. While distance greater than threshold, go to the next page.
+	page          = 1
+	pageHeaderRgx = regexp.MustCompile(`(\d+)\s*/\s*(\d+)`)
 )
 
 func check(err error) {
@@ -55,8 +65,9 @@ func printHelpAndExit(code int) {
 	fmt.Printf("Usage: %s [flags] <color>\n\n", os.Args[0])
 	fmt.Println("Color is given in format 'rrggbb' or '#rrggbb'.\n")
 	fmt.Println("Flags:")
-	fmt.Printf("  -h  %s\n", hDesc)
-	fmt.Printf("  -r  %s\n", rDesc)
+	fmt.Printf("  -h  %s\n", H_DESC)
+	fmt.Printf("  -r  %s\n", R_DESC)
+	fmt.Printf("  -t float  %s\n", T_DESC)
 
 	os.Exit(code)
 }
@@ -66,8 +77,9 @@ func parseArgs() {
 		printHelpAndExit(0)
 	}
 
-	h := flag.Bool("h", false, hDesc)
-	r := flag.Bool("r", false, rDesc)
+	h := flag.Bool("h", false, H_DESC)
+	r := flag.Bool("r", false, R_DESC)
+	flag.Float64Var(&threshold, "t", MAX_DISTANCE, T_DESC)
 
 	flag.Parse()
 
@@ -76,6 +88,13 @@ func parseArgs() {
 	}
 	if *r {
 		return
+	}
+	if threshold <= 0 {
+		fmt.Println("ERROR: threshold must be positive.\n")
+		printHelpAndExit(1)
+	}
+	if threshold > MAX_DISTANCE {
+		threshold = MAX_DISTANCE
 	}
 
 	colorStr := flag.Arg(0)
@@ -99,13 +118,15 @@ func parseArgs() {
 	checkColor = &color.NRGBA{uint8(red), uint8(green), uint8(blue), 0xff}
 }
 
-func setResolutions() {
+// setResolution finds out screen resolution and sets variable.
+func setResolution() {
 	cmd := "xdpyinfo | awk '/dimensions/{print $2}'"
 	out, err := exec.Command("bash", "-c", cmd).Output()
 	check(err)
 	resolution = strings.TrimSpace(string(out))
 }
 
+// setImagesDir sets variable according to current user and screen resolution.
 func setImagesDir() {
 	imagesDir = fmt.Sprintf("%s/Images/%s", os.Getenv("HOME"), resolution)
 	// Create directory if not exists.
@@ -116,6 +137,7 @@ func setImagesDir() {
 	}
 }
 
+// getResponse returns response from url.
 func getResponse(url string) *http.Response {
 	request, err := http.NewRequest("GET", url, nil)
 	check(err)
@@ -137,7 +159,7 @@ func getDocument(url string) *goquery.Document {
 	return document
 }
 
-// color2hex return color in hex format '#rrggbb'
+// color2hex returns color in hex format '#rrggbb'
 func color2hex(c *color.NRGBA) string {
 	hex := fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
 	if c.A != 0xff {
@@ -160,8 +182,8 @@ func getColorDistance(c1, c2 *color.NRGBA) float64 {
 	return math.Sqrt((r1-r2)*(r1-r2) + (g1-g2)*(g1-g2) + (b1-b2)*(b1-b2) + (a1-a2)*(a1-a2))
 }
 
-// pickThumb picks thumb which closest to color and returns it with distance from the checkColor.
-// If not color, returns first thumb and -1.
+// pickThumb picks thumb which closest to color and returns it with thumb's average color and
+// distance from the checkColor. If not color, returns first thumb.
 func pickThumb(thumbs *goquery.Selection) (*goquery.Selection, *color.NRGBA, float64) {
 	if checkColor == nil {
 		return thumbs.First(), nil, -1
@@ -175,7 +197,7 @@ func pickThumb(thumbs *goquery.Selection) (*goquery.Selection, *color.NRGBA, flo
 		var (
 			closestThumb             *goquery.Selection
 			closestThumbAverageColor *color.NRGBA
-			minDistance              = 500.0
+			minDistance              = MAX_DISTANCE
 			results                  = make(chan result, thumbs.Length())
 		)
 
@@ -188,7 +210,12 @@ func pickThumb(thumbs *goquery.Selection) (*goquery.Selection, *color.NRGBA, flo
 				response := getResponse(src)
 				defer response.Body.Close()
 				img, _, err := image.Decode(response.Body)
-				check(err)
+				if err != nil {
+					// Pass image
+					log.Printf("ERROR: %s: %s", src, err)
+					results <- result{thumb, color.NRGBA{}, MAX_DISTANCE}
+					return
+				}
 				avgColor := average_color.AverageColor(img)
 				distance := getColorDistance(&avgColor, checkColor)
 				results <- result{thumb, avgColor, distance}
@@ -225,7 +252,7 @@ func downloadImage(src string) string {
 	return imagePath
 }
 
-// Set wallpaper.
+// setWallpaper sets wallpaper.
 func setWallpaper(imagePath string) {
 	cmd := exec.Command("fbsetbg", "-t", imagePath)
 	err := cmd.Run()
@@ -235,25 +262,57 @@ func setWallpaper(imagePath string) {
 func main() {
 	parseArgs()
 
-	setResolutions()
+	setResolution()
 	setImagesDir()
 
-	url := fmt.Sprintf("%s/search?categories=%s&purity=%s&resolutions=%s&sorting=%s", BASE_URL, CATEGORIES, PURITY, resolution, SORTING)
+	var thumb, closestThumb *goquery.Selection
+	var avgColor, closestAvgColor *color.NRGBA
+	distance := threshold + 1
+	closestDistance := MAX_DISTANCE
 
-	// Page with thumbs.
-	page := getDocument(url)
-	thumbs := page.Find("figure.thumb")
-	if thumbs.Length() == 0 {
-		log.Panicf("Could not find thumbs")
+	for distance > threshold {
+		url := fmt.Sprintf("%s/search?categories=%s&purity=%s&resolutions=%s&sorting=%s&page=%d", BASE_URL, CATEGORIES, PURITY, resolution, SORTING, page)
+
+		// Page with thumbs.
+		doc := getDocument(url)
+
+		// If we have reached last page but could not find appropriate thumb, accept closest found.
+		pageHeader := doc.Find(".thumb-listing-page-header").Text()
+		submatches := pageHeaderRgx.FindStringSubmatch(pageHeader)
+		curPage := submatches[1]
+		lastPage := submatches[2]
+		if curPage == lastPage {
+			thumb = closestThumb
+			avgColor = closestAvgColor
+			distance = closestDistance
+			break
+		}
+
+		thumbs := doc.Find("figure.thumb")
+		if thumbs.Length() == 0 {
+			log.Panicf("Could not find thumbs")
+		}
+
+		if page == 1 {
+			if checkColor != nil {
+				fmt.Printf("Picking a thumb out of %d which has average color closest to %s...\n", thumbs.Length(), color2hex(checkColor))
+			} else {
+				fmt.Printf("Picking first thumb out of %d.\n", thumbs.Length())
+			}
+		}
+
+		thumb, avgColor, distance = pickThumb(thumbs)
+		if distance > threshold {
+			if distance < closestDistance {
+				closestThumb = thumb
+				closestAvgColor = avgColor
+				closestDistance = distance
+			}
+			page++
+			fmt.Printf("%.2f > %.2f go to page %d of %s\n", distance, threshold, page, lastPage)
+		}
 	}
 
-	if checkColor != nil {
-		fmt.Printf("Picking a thumb out of %d which has average color closest to %s...\n", thumbs.Length(), color2hex(checkColor))
-	} else {
-		fmt.Printf("Picking first thumb out of %d.\n", thumbs.Length())
-	}
-
-	thumb, avgColor, distance := pickThumb(thumbs)
 	href, ok := thumb.Find(".preview").Attr("href")
 	if !ok {
 		log.Panic("Could not find thumb's preview href")
@@ -264,8 +323,8 @@ func main() {
 	}
 
 	// Preview page.
-	page = getDocument(href)
-	img := page.Find("#wallpaper")
+	doc := getDocument(href)
+	img := doc.Find("#wallpaper")
 	src, ok := img.Attr("src")
 	if !ok {
 		log.Panic("Could not find wallpaper's src on preview page")
