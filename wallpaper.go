@@ -1,5 +1,6 @@
 /*
-Program downloads and sets random wallpaper from wallhaven.cc according to command-line arguments.
+Program downloads and sets random wallpaper for current screen resolution from wallhaven.cc
+according to command-line arguments.
 */
 package main
 
