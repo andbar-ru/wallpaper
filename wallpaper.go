@@ -12,16 +12,14 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/http/cookiejar"
+	netUrl "net/url"
 	"os"
 	"os/exec"
 	"path"
 	"regexp"
 	"strconv"
 	"strings"
-
-	_ "image/gif"
-	_ "image/jpeg"
-	_ "image/png"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andbar-ru/average_color"
@@ -39,20 +37,65 @@ const (
 	H_DESC = "print this help"
 	R_DESC = "true random - download and set random wallpaper without comparing with check color"
 	T_DESC = "threshold - maximum allowed distance between thumb average color and check color. Must be between 0 and 500."
+	L_DESC = "last page to process. In the case of random search this is the number of tryings as next pages can have duplicate thumbs."
 )
+
+// Custom http.Client.
+type customClient struct {
+	client  *http.Client
+	referer string
+}
+
+func (client *customClient) get(url string) *http.Response {
+	urlParsed, err := netUrl.Parse(url)
+	check(err)
+	urlPath := urlParsed.Path
+
+	request, err := http.NewRequest("GET", url, nil)
+	check(err)
+
+	request.Header.Set("user-agent", USER_AGENT)
+	if client.referer != "" {
+		request.Header.Set("referer", client.referer)
+	}
+	if urlPath == "/search" {
+		request.Header.Set("x-requested-with", "XMLHttpRequest")
+	}
+
+	response, err := client.client.Do(request)
+	check(err)
+	if response.StatusCode != 200 {
+		log.Panicf("Status code error: %d %s", response.StatusCode, response.Status)
+	}
+
+	if urlPath == "/search" {
+		client.referer = url
+	}
+	if client.client.Jar == nil {
+		jar, err := cookiejar.New(nil)
+		check(err)
+		u, err := netUrl.Parse(BASE_URL)
+		check(err)
+		jar.SetCookies(u, response.Cookies())
+		client.client.Jar = jar
+	}
+
+	return response
+}
 
 var (
 	// Set from сommand line arguments.
 	checkColor *color.NRGBA
 	threshold  float64
+	lastPage   int
 
 	imagesDir  string
 	resolution string
-	client     = &http.Client{}
+	client     = &customClient{client: &http.Client{}}
 	colorRgx   = regexp.MustCompile(`^#?[0-9a-fA-F]{6}$`)
 	// Start page. While distance greater than threshold, go to the next page.
 	page          = 1
-	pageHeaderRgx = regexp.MustCompile(`(\d+)\s*/\s*(\d+)`)
+	pageHeaderRgx = regexp.MustCompile(`\d+\s*/\s*(\d+)`)
 )
 
 func check(err error) {
@@ -68,6 +111,7 @@ func printHelpAndExit(code int) {
 	fmt.Printf("  -h  %s\n", H_DESC)
 	fmt.Printf("  -r  %s\n", R_DESC)
 	fmt.Printf("  -t float  %s\n", T_DESC)
+	fmt.Printf("  -l int  %s\n", L_DESC)
 
 	os.Exit(code)
 }
@@ -80,6 +124,7 @@ func parseArgs() {
 	h := flag.Bool("h", false, H_DESC)
 	r := flag.Bool("r", false, R_DESC)
 	flag.Float64Var(&threshold, "t", MAX_DISTANCE, T_DESC)
+	flag.IntVar(&lastPage, "l", 0, L_DESC)
 
 	flag.Parse()
 
@@ -137,22 +182,9 @@ func setImagesDir() {
 	}
 }
 
-// getResponse returns response from url.
-func getResponse(url string) *http.Response {
-	request, err := http.NewRequest("GET", url, nil)
-	check(err)
-	request.Header.Set("User-Agent", USER_AGENT)
-	response, err := client.Do(request)
-	check(err)
-	if response.StatusCode != 200 {
-		log.Panicf("Status code error: %d %s", response.StatusCode, response.Status)
-	}
-	return response
-}
-
 // getDocument returns goquery Document from page content on url.
 func getDocument(url string) *goquery.Document {
-	response := getResponse(url)
+	response := client.get(url)
 	defer response.Body.Close()
 	document, err := goquery.NewDocumentFromReader(response.Body)
 	check(err)
@@ -207,7 +239,7 @@ func pickThumb(thumbs *goquery.Selection) (*goquery.Selection, *color.NRGBA, flo
 				if !ok {
 					log.Panic("Could not find thumb src")
 				}
-				response := getResponse(src)
+				response := client.get(src)
 				defer response.Body.Close()
 				img, _, err := image.Decode(response.Body)
 				if err != nil {
@@ -243,7 +275,7 @@ func downloadImage(src string) string {
 		log.Panicf("Could not create file %s, err: %s", imagePath, err)
 	}
 	defer output.Close()
-	response := getResponse(src)
+	response := client.get(src)
 	defer response.Body.Close()
 	_, err = io.Copy(output, response.Body)
 	if err != nil {
@@ -269,6 +301,7 @@ func main() {
 	var avgColor, closestAvgColor *color.NRGBA
 	distance := threshold + 1
 	closestDistance := MAX_DISTANCE
+	var pageOf int
 
 	for distance > threshold {
 		url := fmt.Sprintf("%s/search?categories=%s&purity=%s&resolutions=%s&sorting=%s&page=%d", BASE_URL, CATEGORIES, PURITY, resolution, SORTING, page)
@@ -276,16 +309,15 @@ func main() {
 		// Page with thumbs.
 		doc := getDocument(url)
 
-		// If we have reached last page but could not find appropriate thumb, accept closest found.
-		pageHeader := doc.Find(".thumb-listing-page-header").Text()
-		submatches := pageHeaderRgx.FindStringSubmatch(pageHeader)
-		curPage := submatches[1]
-		lastPage := submatches[2]
-		if curPage == lastPage {
-			thumb = closestThumb
-			avgColor = closestAvgColor
-			distance = closestDistance
-			break
+		if page == 1 {
+			pageHeader := doc.Find(".thumb-listing-page-header").Text()
+			submatches := pageHeaderRgx.FindStringSubmatch(pageHeader)
+			var err error
+			pageOf, err = strconv.Atoi(submatches[1])
+			check(err)
+			if lastPage < 1 || lastPage > pageOf {
+				lastPage = pageOf
+			}
 		}
 
 		thumbs := doc.Find("figure.thumb")
@@ -302,6 +334,7 @@ func main() {
 		}
 
 		thumb, avgColor, distance = pickThumb(thumbs)
+
 		if distance > threshold {
 			if distance < closestDistance {
 				closestThumb = thumb
@@ -309,7 +342,15 @@ func main() {
 				closestDistance = distance
 			}
 			page++
-			fmt.Printf("%.2f > %.2f go to page %d of %s\n", distance, threshold, page, lastPage)
+			// If we have reached last page but could not find appropriate thumb, accept closest found.
+			if page > lastPage {
+				fmt.Println("Could not find appropriate thumb, picking the closest one")
+				thumb = closestThumb
+				avgColor = closestAvgColor
+				distance = closestDistance
+				break
+			}
+			fmt.Printf("%.2f > %.2f go to page %d of %d\n", distance, threshold, page, pageOf)
 		}
 	}
 
