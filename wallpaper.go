@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	baseURL    = "https://alpha.wallhaven.cc"
+	baseURL    = "https://wallhaven.cc"
 	categories = "100" // +General,-Anime,-People
 	purity     = "100" // +SWF(safe for work),-Sketchy,?
 	sorting    = "random"
@@ -107,7 +107,7 @@ func check(err error) {
 
 func printHelpAndExit(code int) {
 	fmt.Printf("Usage: %s [flags] <color>\n\n", os.Args[0])
-	fmt.Println("Color is given in format 'rrggbb' or '#rrggbb'.\n")
+	fmt.Print("Color is given in format 'rrggbb' or '#rrggbb'.\n\n")
 	fmt.Println("Flags:")
 	fmt.Printf("  -h  %s\n", hDesc)
 	fmt.Printf("  -r  %s\n", rDesc)
@@ -136,7 +136,7 @@ func parseArgs() {
 		return
 	}
 	if threshold <= 0 {
-		fmt.Println("ERROR: threshold must be positive.\n")
+		fmt.Print("ERROR: threshold must be positive.\n\n")
 		printHelpAndExit(1)
 	}
 	if threshold > maxDistance {
@@ -145,11 +145,11 @@ func parseArgs() {
 
 	colorStr := flag.Arg(0)
 	if colorStr == "" {
-		fmt.Println("ERROR: color is not specified.\n")
+		fmt.Print("ERROR: color is not specified.\n\n")
 		printHelpAndExit(1)
 	}
 	if !colorRgx.MatchString(colorStr) {
-		fmt.Println("ERROR: color is in wrong format.\n")
+		fmt.Print("ERROR: color is in wrong format.\n\n")
 		printHelpAndExit(1)
 	}
 	if colorStr[0] == '#' {
@@ -310,7 +310,8 @@ func main() {
 		// Page with thumbs.
 		doc := getDocument(url)
 
-		if page == 1 {
+		// Setting lastPage.
+		if page == 2 {
 			pageHeader := doc.Find(".thumb-listing-page-header").Text()
 			submatches := pageHeaderRgx.FindStringSubmatch(pageHeader)
 			var err error
@@ -344,14 +345,18 @@ func main() {
 			}
 			page++
 			// If we have reached last page but could not find appropriate thumb, accept closest found.
-			if page > lastPage {
+			if page > lastPage && lastPage != 0 {
 				fmt.Println("Could not find appropriate thumb, picking the closest one")
 				thumb = closestThumb
 				avgColor = closestAvgColor
 				distance = closestDistance
 				break
 			}
-			fmt.Printf("%.2f > %.2f go to page %d of %d\n", distance, threshold, page, pageOf)
+			if pageOf != 0 {
+				fmt.Printf("%.2f > %.2f go to page %d of %d\n", distance, threshold, page, pageOf)
+			} else {
+				fmt.Printf("%.2f > %.2f go to page %d of ?\n", distance, threshold, page)
+			}
 		}
 	}
 
