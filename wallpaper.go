@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"math"
+	"math/rand"
 	"net/http"
 	"net/http/cookiejar"
 	netUrl "net/url"
@@ -21,6 +22,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andbar-ru/average_color"
@@ -35,10 +37,27 @@ const (
 	maxDistance = 500.0
 	userAgent   = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/72.0.3626.122 Safari/537.36"
 
-	hDesc = "print this help"
-	rDesc = "true random - download and set random wallpaper without comparing with check color"
-	tDesc = "threshold - maximum allowed distance between thumb average color and check color. Must be between 0 and 500."
-	lDesc = "last page to process. In the case of random search this is the number of tryings as next pages can have duplicate thumbs."
+	hDesc   = "print this help"
+	rDesc   = "true random - download and set random wallpaper without comparing with check color"
+	tDesc   = "threshold - maximum allowed distance between thumb average color and check color. Must be between 0 and 500."
+	lDesc   = "last page to process. In the case of random search this is the number of tryings as next pages can have duplicate thumbs."
+	symbols = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 !\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+)
+
+var (
+	// Set from сommand line arguments.
+	checkColor *color.NRGBA
+	threshold  float64
+	lastPage   int
+
+	imagesDir  string
+	resolution string
+	client     = &customClient{client: &http.Client{}}
+	colorRgx   = regexp.MustCompile(`^#?[0-9a-fA-F]{6}$`)
+	// Start page. While distance greater than threshold, go to the next page.
+	page          = 1
+	pageHeaderRgx = regexp.MustCompile(`\d+\s*/\s*(\d+)`)
+	seed          = getSeed()
 )
 
 // Custom http.Client.
@@ -84,20 +103,15 @@ func (client *customClient) get(url string) *http.Response {
 	return response
 }
 
-var (
-	// Set from сommand line arguments.
-	checkColor *color.NRGBA
-	threshold  float64
-	lastPage   int
-
-	imagesDir  string
-	resolution string
-	client     = &customClient{client: &http.Client{}}
-	colorRgx   = regexp.MustCompile(`^#?[0-9a-fA-F]{6}$`)
-	// Start page. While distance greater than threshold, go to the next page.
-	page          = 1
-	pageHeaderRgx = regexp.MustCompile(`\d+\s*/\s*(\d+)`)
-)
+// getSeed returns random strings which will be used as a seed.
+func getSeed() string {
+	var s string
+	random := rand.New(rand.NewSource(time.Now().UnixNano()))
+	for i := 0; i < 16; i++ {
+		s += string(symbols[random.Intn(len(symbols))])
+	}
+	return netUrl.QueryEscape(s)
+}
 
 func check(err error) {
 	if err != nil {
@@ -305,7 +319,7 @@ func main() {
 	var pageOf int
 
 	for distance > threshold {
-		url := fmt.Sprintf("%s/search?categories=%s&purity=%s&resolutions=%s&sorting=%s&page=%d", baseURL, categories, purity, resolution, sorting, page)
+		url := fmt.Sprintf("%s/search?categories=%s&purity=%s&resolutions=%s&sorting=%s&seed=%s&page=%d", baseURL, categories, purity, resolution, sorting, seed, page)
 
 		// Page with thumbs.
 		doc := getDocument(url)
