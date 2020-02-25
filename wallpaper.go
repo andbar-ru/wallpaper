@@ -324,7 +324,8 @@ func main() {
 		// Page with thumbs.
 		doc := getDocument(url)
 
-		// Setting lastPage.
+		// Setting lastPage and pageOf.
+		// We can't set these variables on the first page because page info becomes available since second page.
 		if page == 2 {
 			pageHeader := doc.Find(".thumb-listing-page-header").Text()
 			submatches := pageHeaderRgx.FindStringSubmatch(pageHeader)
