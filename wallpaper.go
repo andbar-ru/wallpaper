@@ -5,6 +5,7 @@ according to command-line arguments.
 package main
 
 import (
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"image"
@@ -52,7 +53,7 @@ var (
 
 	imagesDir  string
 	resolution string
-	client     = &customClient{client: &http.Client{}}
+	client     = newClient()
 	colorRgx   = regexp.MustCompile(`^#?[0-9a-fA-F]{6}$`)
 	// Start page. While distance greater than threshold, go to the next page.
 	page          = 1
@@ -64,6 +65,14 @@ var (
 type customClient struct {
 	client  *http.Client
 	referer string
+}
+
+func newClient() *customClient {
+	// There is self-signed sertificate in Kronshtadt Technologies.
+	tlsConfig := &tls.Config{InsecureSkipVerify: true}
+	transport := &http.Transport{TLSClientConfig: tlsConfig}
+	client := &customClient{client: &http.Client{Transport: transport}}
+	return client
 }
 
 func (client *customClient) get(url string) *http.Response {
