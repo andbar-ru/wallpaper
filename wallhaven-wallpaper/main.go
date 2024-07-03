@@ -12,7 +12,6 @@ import (
 	"image/color"
 	"io"
 	"log"
-	"math"
 	"math/rand"
 	"net/http"
 	"net/http/cookiejar"
@@ -24,6 +23,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"wallpaper/utils"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/andbar-ru/average_color"
@@ -215,29 +216,6 @@ func getDocument(url string) *goquery.Document {
 	return document
 }
 
-// color2hex returns color in hex format '#rrggbb'
-func color2hex(c *color.NRGBA) string {
-	hex := fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
-	if c.A != 0xff {
-		hex += fmt.Sprintf("%02x", c.A)
-	}
-	return hex
-}
-
-// getColorDistance returns Euclidean distance between two NRGBA colors.
-func getColorDistance(c1, c2 *color.NRGBA) float64 {
-	r1 := float64(c1.R)
-	r2 := float64(c2.R)
-	g1 := float64(c1.G)
-	g2 := float64(c2.G)
-	b1 := float64(c1.B)
-	b2 := float64(c2.B)
-	a1 := float64(c1.A)
-	a2 := float64(c2.A)
-
-	return math.Sqrt((r1-r2)*(r1-r2) + (g1-g2)*(g1-g2) + (b1-b2)*(b1-b2) + (a1-a2)*(a1-a2))
-}
-
 // pickThumb picks thumb which closest to color and returns it with thumb's average color and
 // distance from the checkColor. If not color, returns first thumb.
 func pickThumb(thumbs *goquery.Selection) (*goquery.Selection, *color.NRGBA, float64) {
@@ -274,7 +252,7 @@ func pickThumb(thumbs *goquery.Selection) (*goquery.Selection, *color.NRGBA, flo
 				return
 			}
 			avgColor := average_color.AverageColor(img)
-			distance := getColorDistance(&avgColor, checkColor)
+			distance := utils.GetColorDistance(&avgColor, checkColor)
 			results <- result{thumb, avgColor, distance}
 		}()
 	})
@@ -306,13 +284,6 @@ func downloadImage(src string) string {
 		log.Panicf("Could not write image to file, err: %s", err)
 	}
 	return imagePath
-}
-
-// setWallpaper sets wallpaper.
-func setWallpaper(imagePath string) {
-	cmd := exec.Command("fbsetbg", "-t", imagePath)
-	err := cmd.Run()
-	check(err)
 }
 
 func main() {
@@ -353,7 +324,7 @@ func main() {
 
 		if page == 1 {
 			if checkColor != nil {
-				fmt.Printf("Picking a thumb out of %d which has average color closest to %s...\n", thumbs.Length(), color2hex(checkColor))
+				fmt.Printf("Picking a thumb out of %d which has average color closest to %s...\n", thumbs.Length(), utils.Color2hex(checkColor))
 			} else {
 				fmt.Printf("Picking first thumb out of %d.\n", thumbs.Length())
 			}
@@ -390,7 +361,7 @@ func main() {
 	}
 
 	if avgColor != nil {
-		fmt.Printf("Result: average color %s, distance %.2f\n", color2hex(avgColor), distance)
+		fmt.Printf("Result: average color %s, distance %.2f\n", utils.Color2hex(avgColor), distance)
 	}
 
 	// Preview page.
@@ -406,5 +377,6 @@ func main() {
 
 	fmt.Println(src)
 	imagePath := downloadImage(src)
-	setWallpaper(imagePath)
+	err := utils.SetWallpaper(imagePath)
+	check(err)
 }
