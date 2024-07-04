@@ -244,7 +244,6 @@ func main() {
 	if numWorkers["genImages"] <= 0 {
 		numWorkers["genImages"] = 1
 	}
-	fmt.Println(numWorkers)
 
 	if maxItems > 0 && maxItems < len(files) {
 		rand.Shuffle(len(files), func(i, j int) {
