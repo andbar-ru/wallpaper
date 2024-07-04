@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	_ "image/jpeg"
 	_ "image/png"
@@ -46,6 +47,13 @@ var (
 		".jpeg": {},
 	}
 )
+
+type Image struct {
+	Path     string
+	Image    image.Image
+	AvgColor color.NRGBA
+	Distance float64
+}
 
 func check(err error) {
 	if err != nil {
@@ -118,6 +126,70 @@ func parseArgs() {
 	checkColor = &color.NRGBA{uint8(red), uint8(green), uint8(blue), 0xff}
 }
 
+func genImages(paths []string) <-chan Image {
+	ch := make(chan Image)
+	var wg sync.WaitGroup
+	for _, path := range paths {
+		wg.Add(1)
+		go func() {
+			fmt.Print("i")
+			defer wg.Done()
+			file, err := os.Open(path)
+			check(err)
+			img, _, err := image.Decode(file)
+			check(err)
+			file.Close()
+			ch <- Image{Path: path, Image: img}
+			fmt.Print("I")
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+	return ch
+}
+
+func genAvgColors(images <-chan Image) <-chan Image {
+	ch := make(chan Image)
+	var wg sync.WaitGroup
+	for img := range images {
+		wg.Add(1)
+		go func() {
+			fmt.Print("c")
+			defer wg.Done()
+			img.AvgColor = average_color.AverageColor(img.Image)
+			ch <- img
+			fmt.Print("C")
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+	return ch
+}
+
+func genDistances(images <-chan Image) <-chan Image {
+	ch := make(chan Image)
+	var wg sync.WaitGroup
+	for img := range images {
+		wg.Add(1)
+		go func() {
+			fmt.Print("d")
+			defer wg.Done()
+			img.Distance = utils.GetColorDistance(&img.AvgColor, checkColor)
+			ch <- img
+			fmt.Print("D")
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+	return ch
+}
+
 func main() {
 	parseArgs()
 
@@ -154,33 +226,23 @@ func main() {
 		files = files[:maxItems]
 	}
 
-	imagePath := ""
-	imageDistance := 500.0
+	resultPath := ""
+	resultDistance := 500.0
 
 	log.Debug(fmt.Sprintf("Processing %d files", len(files)))
-	for i, path := range files {
-		i += 1
-		if i%10 == 0 {
-			fmt.Print(i)
-		} else {
-			fmt.Print(".")
-		}
-		file, err := os.Open(path)
-		check(err)
-		defer file.Close()
 
-		img, _, err := image.Decode(file)
-		check(err)
-		avgColor := average_color.AverageColor(img)
-		distance := utils.GetColorDistance(&avgColor, checkColor)
-		if distance < imageDistance {
-			imageDistance = distance
-			imagePath = path
+	images := genImages(files)
+	imagesWithAvgColor := genAvgColors(images)
+	imagesWithDistance := genDistances(imagesWithAvgColor)
+
+	for img := range imagesWithDistance {
+		if img.Distance < resultDistance {
+			resultDistance = img.Distance
+			resultPath = img.Path
 		}
 	}
 
-	fmt.Println()
-	log.Info(fmt.Sprintf("file: %q, distance: %.2f", imagePath, imageDistance))
-	err := utils.SetWallpaper(imagePath)
+	log.Info(fmt.Sprintf("file: %q, distance: %.2f", resultPath, resultDistance))
+	err := utils.SetWallpaper(resultPath)
 	check(err)
 }
