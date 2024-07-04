@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,11 @@ var (
 		".png":  {},
 		".jpg":  {},
 		".jpeg": {},
+	}
+	numWorkers = map[string]int{
+		"genImages":    0,
+		"genAvgColors": 0,
+		"genDistances": 1,
 	}
 )
 
@@ -127,40 +133,50 @@ func parseArgs() {
 }
 
 func genImages(paths []string) <-chan Image {
+	pathCh := make(chan string)
+	go func() {
+		for _, path := range paths {
+			pathCh <- path
+		}
+		close(pathCh)
+	}()
+
 	ch := make(chan Image)
 	var wg sync.WaitGroup
-	for _, path := range paths {
+	for i := 0; i < numWorkers["genImages"]; i++ {
 		wg.Add(1)
 		go func() {
-			fmt.Print("i")
 			defer wg.Done()
-			file, err := os.Open(path)
-			check(err)
-			img, _, err := image.Decode(file)
-			check(err)
-			file.Close()
-			ch <- Image{Path: path, Image: img}
-			fmt.Print("I")
+			for path := range pathCh {
+				file, err := os.Open(path)
+				check(err)
+				img, _, err := image.Decode(file)
+				check(err)
+				file.Close()
+				ch <- Image{Path: path, Image: img}
+			}
 		}()
 	}
+
 	go func() {
 		wg.Wait()
 		close(ch)
 	}()
+
 	return ch
 }
 
 func genAvgColors(images <-chan Image) <-chan Image {
 	ch := make(chan Image)
 	var wg sync.WaitGroup
-	for img := range images {
+	for i := 0; i < numWorkers["genAvgColors"]; i++ {
 		wg.Add(1)
 		go func() {
-			fmt.Print("c")
 			defer wg.Done()
-			img.AvgColor = average_color.AverageColor(img.Image)
-			ch <- img
-			fmt.Print("C")
+			for img := range images {
+				img.AvgColor = average_color.AverageColor(img.Image)
+				ch <- img
+			}
 		}()
 	}
 	go func() {
@@ -173,14 +189,14 @@ func genAvgColors(images <-chan Image) <-chan Image {
 func genDistances(images <-chan Image) <-chan Image {
 	ch := make(chan Image)
 	var wg sync.WaitGroup
-	for img := range images {
+	for i := 0; i < numWorkers["genDistances"]; i++ {
 		wg.Add(1)
 		go func() {
-			fmt.Print("d")
 			defer wg.Done()
-			img.Distance = utils.GetColorDistance(&img.AvgColor, checkColor)
-			ch <- img
-			fmt.Print("D")
+			for img := range images {
+				img.Distance = utils.GetColorDistance(&img.AvgColor, checkColor)
+				ch <- img
+			}
 		}()
 	}
 	go func() {
@@ -219,6 +235,17 @@ func main() {
 
 	log.Info(fmt.Sprintf("Searching image closest to the color %q.", utils.Color2hex(checkColor)))
 
+	numcpu := runtime.NumCPU()
+	numWorkers["genAvgColors"] = numcpu / 4
+	if numWorkers["genAvgColors"] <= 0 {
+		numWorkers["genAvgColors"] = 1
+	}
+	numWorkers["genImages"] = numcpu - numWorkers["genAvgColors"] - numWorkers["genDistances"]
+	if numWorkers["genImages"] <= 0 {
+		numWorkers["genImages"] = 1
+	}
+	fmt.Println(numWorkers)
+
 	if maxItems > 0 && maxItems < len(files) {
 		rand.Shuffle(len(files), func(i, j int) {
 			files[i], files[j] = files[j], files[i]
@@ -235,13 +262,21 @@ func main() {
 	imagesWithAvgColor := genAvgColors(images)
 	imagesWithDistance := genDistances(imagesWithAvgColor)
 
+	i := 0
 	for img := range imagesWithDistance {
+		i++
+		if i%10 == 0 {
+			fmt.Print(i)
+		} else {
+			fmt.Print(".")
+		}
 		if img.Distance < resultDistance {
 			resultDistance = img.Distance
 			resultPath = img.Path
 		}
 	}
 
+	fmt.Println()
 	log.Info(fmt.Sprintf("file: %q, distance: %.2f", resultPath, resultDistance))
 	err := utils.SetWallpaper(resultPath)
 	check(err)
